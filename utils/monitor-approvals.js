@@ -7,7 +7,6 @@ const DUSTSWEAPER_ADDRESS = "0x78106f7db3EbCEe3D2CFAC647f0E4c9b06683B39";
 module.exports = async () => {
   let eventArray = [];
 
-  //TODO: Loop over all acceptable addresses
   for (let index = 0; index < TOKEN_ADDRESSES.length; index++) {
     const _contract = await ethers.getContractAt(
       "IERC20",

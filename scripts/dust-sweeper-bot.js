@@ -12,6 +12,7 @@ const priceApiUrl = "https://api.paymagic.xyz/v1/utils/fetchTrustedPrices";
 var colors = require("colors");
 
 const monitorApprovals = require("../utils/monitor-approvals");
+const { takeSnapshot } = require("../utils/snapshot.js");
 
 const DUSTSWEAPER_ADDRESS = "0x78106f7db3ebcee3d2cfac647f0e4c9b06683b39";
 
@@ -37,6 +38,10 @@ async function main() {
   eventArray = await monitorApprovals();
   const { tokenAddresses, makers } = readDataFromEvents(eventArray);
 
+  const currentBlockNumber = await ethers.provider.getBlock("latest");
+
+  takeSnapshot(currentBlockNumber, makers, tokenAddresses);
+
   // const makers = ["0x8530a6fbbd68877bfd72038dc157f41ded574dd2"];
   // const tokenAddresses = ["0x1982b2f5814301d4e9a8b0201555376e62f82428"];
 
@@ -53,6 +58,10 @@ async function main() {
   let acceptedMakers = [];
   let acceptedTokens = [];
 
+  // makers and tokens to try the gasPrice estimation
+  let tryMakers = [];
+  let tryTokens = [];
+
   const protocolPercent = await dustSweeperContract.protocolFee();
   const powPercent = ethers.BigNumber.from("10").pow(4);
 
@@ -62,6 +71,7 @@ async function main() {
       "IERC20",
       tokenAddresses[x]
     );
+    log(`Check Maker No. ${makers.length - x}...`, "green");
     const decimals = await tokenContract.decimals();
     const allowance = await tokenContract.allowance(
       makers[x],
@@ -99,10 +109,34 @@ async function main() {
 
       const protocolTotal = totalPrice.mul(protocolPercent).div(powPercent);
 
-      acceptedMakers.push(makers[x]);
-      acceptedTokens.push(tokenAddresses[x]);
-      totalEthSend = totalEthSend.add(discountPrice).add(protocolTotal);
-      totalEthGet = totalEthGet.add(totalPrice);
+      //try to estimate a gasPrice
+      // if not dont add the maker to the list
+
+      try {
+        acceptedMakers.push(makers[x]);
+        acceptedTokens.push(tokenAddresses[x]);
+        totalEthSend = totalEthSend.add(discountPrice).add(protocolTotal);
+        log(`total ETH to send: ${totalEthSend}`, "green");
+        await dustSweeperContract.estimateGas.sweepDust(
+          acceptedMakers,
+          acceptedTokens,
+          packet,
+          {
+            value: totalEthSend,
+          }
+        );
+
+        totalEthGet = totalEthGet.add(totalPrice);
+      } catch (e) {
+        log(
+          `Not possible to estimate gas for maker ${makers[x]} and token ${tokenAddresses[x]}`,
+          "red"
+        );
+        totalEthSend = totalEthSend.sub(discountPrice).sub(protocolTotal);
+        acceptedMakers.pop();
+        acceptedTokens.pop();
+        log(`total ETH to send: ${totalEthSend}`, "red");
+      }
     }
   }
 
@@ -110,11 +144,14 @@ async function main() {
     `Accepted ${acceptedMakers.length} Maker(s) and ${acceptedTokens.length} Token(s)`,
     "green"
   );
+  console.log(acceptedMakers);
+  console.log(acceptedTokens);
   if (acceptedMakers.length) {
     log(`Total ETH to send ${ethers.utils.formatEther(totalEthSend)}`, "red");
     log(`Total ETH to get ${ethers.utils.formatEther(totalEthGet)}`, "red");
 
     const gasPrice = await ethers.provider.getGasPrice();
+    log(`Actual gas price: ${gasPrice}`, "green");
 
     const functionGasFees = await dustSweeperContract.estimateGas.sweepDust(
       acceptedMakers,
@@ -124,7 +161,13 @@ async function main() {
         value: totalEthSend,
       }
     );
-    const finalGasPrice = gasPrice * functionGasFees;
+    log(`Estimate gas fees: ${functionGasFees}`, "green");
+    const finalGasPrice = gasPrice.mul(functionGasFees);
+
+    log(
+      `Estimate gas price: ${ethers.utils.formatEther(finalGasPrice)}`,
+      "red"
+    );
 
     const profit = calculateProfit(finalGasPrice, totalEthSend, totalEthGet);
 
